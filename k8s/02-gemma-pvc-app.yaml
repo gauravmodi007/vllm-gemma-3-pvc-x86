@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gemma-1b-pvc
+  namespace: vllm-gemma-3-x86
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gemma-1b-pvc
+  template:
+    metadata:
+      labels:
+        app: gemma-1b-pvc
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: vllm-server
+        image: vllm/vllm-openai-cpu:v0.31.0
+        imagePullPolicy: IfNotPresent
+        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        args:
+          - "--model"
+          - "RedHatAI/gemma-3-1b-it-quantized.w8a8"
+          - "--port"
+          - "8000"
+          - "--host"
+          - "0.0.0.0"
+          - "--max-model-len"
+          - "512"
+          - "--max-num-seqs"
+          - "1"
+        env:
+          - name: HF_HOME
+            value: "/models-cache"
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-token
+                key: token
+          - name: VLLM_CPU_KVCACHE_SPACE
+            value: "1"
+          - name: OMP_NUM_THREADS
+            value: "4"
+        ports:
+          - containerPort: 8000
+        resources:
+          requests:
+            memory: "6Gi"
+            cpu: "2"
+          limits:
+            memory: "8Gi"
+            cpu: "6"
+        volumeMounts:
+          - name: dshm
+            mountPath: /dev/shm
+          - name: model-cache
+            mountPath: /models-cache
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 90
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "2Gi"
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: gemma-model-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gemma-1b-pvc
+  namespace: vllm-gemma-3-x86
+spec:
+  ports:
+  - port: 80
+    targetPort: 8000
+  selector:
+    app: gemma-1b-pvc
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: gemma-1b-pvc
+  namespace: vllm-gemma-3-x86
+spec:
+  to:
+    kind: Service
+    name: gemma-1b-pvc
